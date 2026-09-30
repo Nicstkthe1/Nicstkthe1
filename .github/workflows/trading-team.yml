@@ -1,0 +1,60 @@
+name: Trading team
+
+on:
+  schedule:
+    # Every 5 minutes, 9:00-16:59 ET in summer / 8:00-15:59 ET in winter.
+    # The bot checks the real market clock itself, so extra runs are harmless.
+    - cron: "*/5 13-20 * * 1-5"
+    # Daily report, after the close in both summer and winter time.
+    - cron: "20 21 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "run = one normal cycle, flatten = PANIC BUTTON (sell everything now), report = today's trades"
+        type: choice
+        options: [run, flatten, report]
+        default: run
+
+# Never let two cycles trade at the same time.
+concurrency:
+  group: trading-team
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  cycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      ALPACA_PAPER_KEY_ID: ${{ secrets.ALPACA_PAPER_KEY_ID }}
+      ALPACA_PAPER_SECRET_KEY: ${{ secrets.ALPACA_PAPER_SECRET_KEY }}
+      ALPACA_LIVE_KEY_ID: ${{ secrets.ALPACA_LIVE_KEY_ID }}
+      ALPACA_LIVE_SECRET_KEY: ${{ secrets.ALPACA_LIVE_SECRET_KEY }}
+      # Repository variables (Settings > Secrets and variables > Actions > Variables).
+      ALPACA_LIVE: ${{ vars.ALPACA_LIVE || 'false' }}
+      TRADING_ENABLED: ${{ vars.TRADING_ENABLED || 'true' }}
+      BUDGET: ${{ vars.BUDGET || '1000' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+      - name: Trade
+        run: |
+          if [ -z "$ALPACA_PAPER_KEY_ID$ALPACA_LIVE_KEY_ID" ]; then
+            echo "No Alpaca keys configured yet; see TRADING.md." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            CMD="${{ inputs.command }}"
+          elif [ "${{ github.event.schedule }}" = "20 21 * * 1-5" ]; then
+            CMD=report
+          else
+            CMD=run
+          fi
+          python -m trading_team "$CMD"
